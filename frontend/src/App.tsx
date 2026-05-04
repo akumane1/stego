@@ -45,6 +45,7 @@ function App() {
     setIsLoading(true)
     setError(null)
     setResultImage(null)
+    setStegoStats(null)
 
     const formData = new FormData()
     formData.append('prompt', prompt)
@@ -56,6 +57,15 @@ function App() {
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}))
         throw new Error(errData.error || `Помилка сервера: ${response.status}`)
+      }
+
+      const statsHeader = response.headers.get("X-Stego-Stats")
+      if (statsHeader) {
+        try {
+          setStegoStats(JSON.parse(statsHeader))
+        } catch (e) {
+          console.error("Failed to parse stats", e)
+        }
       }
 
       const blob = await response.blob()
@@ -332,6 +342,41 @@ function App() {
 
             {extractedText !== null && (
               <div className="result-section">
+                {!stegoStats && !testing && (
+                  <button 
+                    className="action-btn secondary test-btn"
+                    onClick={handleRunTests}
+                  >
+                    🧪 Перевірити стійкість вбудовування
+                  </button>
+                )}
+
+                {testing && (
+                  <div className="loading-stats">
+                    <div className="spinner-small"></div>
+                    Проводимо стрес-тести (Baseline, Blur, JPEG)...
+                  </div>
+                )}
+                
+                {stegoStats && (
+                  <div className="robustness-report animate-fade-in">
+                    <h4>📊 Результати аналізу стійкості:</h4>
+                    <div className="stats-grid">
+                      <div className={`stat-item ${stegoStats.baseline ? 'pass' : 'fail'}`}>
+                        <span className="icon">{stegoStats.baseline ? '✅' : '❌'}</span>
+                        <span className="label">Цілісність</span>
+                      </div>
+                      <div className={`stat-item ${stegoStats.blur_resilience ? 'pass' : 'fail'}`}>
+                        <span className="icon">{stegoStats.blur_resilience ? '🛡️' : '❌'}</span>
+                        <span className="label">Стійкість Blur</span>
+                      </div>
+                      <div className={`stat-item ${stegoStats.jpeg_resilience ? 'pass' : 'fail'}`}>
+                        <span className="icon">{stegoStats.jpeg_resilience ? '💾' : '❌'}</span>
+                        <span className="label">Стійкість JPEG</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 <span className="result-label">📨 Витягнуте повідомлення</span>
                 <div className="message-box" id="extracted-message">
                   {extractedText || (
