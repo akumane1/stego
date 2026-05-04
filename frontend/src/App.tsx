@@ -24,6 +24,7 @@ function App() {
   // Hide tab state
   const [prompt, setPrompt] = useState('')
   const [secretText, setSecretText] = useState('')
+  const [passwordHide, setPasswordHide] = useState('')
   const [showSecret, setShowSecret] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [resultImage, setResultImage] = useState<string | null>(null)
@@ -37,6 +38,7 @@ function App() {
   // Extract tab state
   const [extractFile, setExtractFile] = useState<File | null>(null)
   const [extractPreview, setExtractPreview] = useState<string | null>(null)
+  const [passwordExtract, setPasswordExtract] = useState('')
   const [extractedText, setExtractedText] = useState<string | null>(null)
   const [isDragOver, setIsDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -66,6 +68,7 @@ function App() {
     const formData = new FormData()
     formData.append('prompt', prompt)
     formData.append('secret_text', secretText)
+    if (passwordHide) formData.append('password', passwordHide)
 
     try {
       const response = await fetch('/api/generate-and-hide', { method: 'POST', body: formData })
@@ -102,6 +105,7 @@ function App() {
       const formData = new FormData()
       formData.append('file', blob, 'stego_test.png')
       formData.append('secret_text', secretText)
+      if (passwordHide) formData.append('password', passwordHide)
 
       const response = await fetch('/api/test-robustness', { method: 'POST', body: formData })
 
@@ -129,6 +133,7 @@ function App() {
 
     const formData = new FormData()
     formData.append('file', extractFile)
+    if (passwordExtract) formData.append('password', passwordExtract)
 
     try {
       const response = await fetch('/api/extract', { method: 'POST', body: formData })
@@ -277,6 +282,21 @@ function App() {
                   {showSecret ? '🙈' : '👁️'}
                 </button>
               </div>
+            </div>
+
+            <div className="field">
+              <label className="field-label" htmlFor="password-hide-input">
+                Пароль для захисту (опціонально)
+              </label>
+              <input
+                id="password-hide-input"
+                type="password"
+                className="field-input"
+                value={passwordHide}
+                onChange={e => setPasswordHide(e.target.value)}
+                placeholder="Введіть ключ для перемішування блоків"
+                autoComplete="new-password"
+              />
             </div>
 
             <button
@@ -446,6 +466,21 @@ function App() {
                   </>
                 )}
               </div>
+            </div>
+
+            <div className="field">
+              <label className="field-label" htmlFor="password-extract-input">
+                Пароль для витягування (якщо використовувався)
+              </label>
+              <input
+                id="password-extract-input"
+                type="password"
+                className="field-input"
+                value={passwordExtract}
+                onChange={e => setPasswordExtract(e.target.value)}
+                placeholder="Введіть ключ для розшифрування"
+                autoComplete="current-password"
+              />
             </div>
 
             <button

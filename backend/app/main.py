@@ -24,7 +24,11 @@ def health_check():
     return {"status": "ok", "message": "Stable Diffusion Steganography API is running."}
 
 @app.post("/api/generate-and-hide")
-async def generate_and_hide(prompt: str = Form(...), secret_text: str = Form(...)):
+async def generate_and_hide(
+    prompt: str = Form(...), 
+    secret_text: str = Form(...),
+    password: str = Form("")
+):
     """
     1. Generate an image from prompt using Stable Diffusion.
     2. Embed the secret text into the generated image using DCT steganography.
@@ -42,7 +46,7 @@ async def generate_and_hide(prompt: str = Form(...), secret_text: str = Form(...
             raise HTTPException(status_code=500, detail="Не вдалося декодувати згенероване зображення.")
 
         # Embed secret text using DCT steganography
-        encoded_img = embed_text_dct(img_np, secret_text)
+        encoded_img = embed_text_dct(img_np, secret_text, password)
 
         # Calculate statistics
         metrics = calculate_metrics(img_np, encoded_img)
@@ -69,7 +73,7 @@ async def generate_and_hide(prompt: str = Form(...), secret_text: str = Form(...
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/api/extract")
-async def extract(file: UploadFile = File(...)):
+async def extract(file: UploadFile = File(...), password: str = Form("")):
     """
     Extract hidden text from an uploaded image using DCT steganography.
     """
@@ -81,7 +85,7 @@ async def extract(file: UploadFile = File(...)):
         if img_np is None:
             raise HTTPException(status_code=400, detail="Не вдалося декодувати завантажене зображення.")
 
-        text = extract_text_dct(img_np)
+        text = extract_text_dct(img_np, password)
         return {"text": text}
 
     except HTTPException:
@@ -90,7 +94,11 @@ async def extract(file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post("/api/test-robustness")
-async def test_robustness(file: UploadFile = File(...), secret_text: str = Form(...)):
+async def test_robustness(
+    file: UploadFile = File(...), 
+    secret_text: str = Form(...),
+    password: str = Form("")
+):
     """
     Apply attacks to the uploaded stego-image, extract text, and return results.
     """
@@ -102,7 +110,7 @@ async def test_robustness(file: UploadFile = File(...), secret_text: str = Form(
         if img_np is None:
             raise HTTPException(status_code=400, detail="Не вдалося декодувати завантажене зображення.")
 
-        results = run_robustness_tests(img_np, secret_text)
+        results = run_robustness_tests(img_np, secret_text, password)
         return {"results": results}
 
     except HTTPException:

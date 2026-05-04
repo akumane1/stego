@@ -4,115 +4,130 @@ from scipy.fftpack import dct, idct
 from collections import Counter
 import base64
 import difflib
+import hashlib
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import mean_squared_error as mse
 from skimage.metrics import peak_signal_noise_ratio as psnr
 
-# --- EXTREME ROBUSTNESS CONFIG ---
-# We use 5x redundancy and a very large step to survive heavy blur
-QUANT_STEP = 50      
-REDUNDANCY = 5       
-# Low frequencies [1,2] and [2,1] are the most robust against filters/blur
-COEFFS = [(1, 2), (2, 1)] 
+# We use very high redundancy and a massive step to survive heavy blur and noise
+QUANT_STEP = 60      
+REDUNDANCY = 11       
+# Lowest AC frequencies [0,1], [1,0], [1,1] are virtually immune to standard blur
+COEFFS = [(2, 1)] 
 
 def text_to_bits(text):
     bits = []
-    for char in text:
-        bin_char = bin(ord(char))[2:].zfill(8)
-        bits.extend([int(b) for b in bin_char])
+    bytes_data = text.encode('utf-8')
+    for b in bytes_data:
+        bin_b = bin(b)[2:].zfill(8)
+        bits.extend([int(bit) for bit in bin_b])
     bits.extend([0] * 8)
     return bits
 
 def bits_to_text(bits):
-    chars = []
+    byte_vals = []
     for i in range(0, len(bits), 8):
-        byte = bits[i:i+8]
-        if len(byte) < 8: break
-        char_code = int("".join(map(str, byte)), 2)
-        if char_code == 0: break
-        chars.append(chr(char_code))
-    return "".join(chars)
-
-def embed_text_dct(image_np, text):
-    """
-    Ultra-robust embedding using low frequencies and high redundancy.
-    """
-    img_ycrcb = cv2.cvtColor(image_np, cv2.COLOR_BGR2YCrCb)
-    y, cr, cb = cv2.split(img_ycrcb)
+        byte_bits = bits[i:i+8]
+        if len(byte_bits) < 8: break
+        val = int("".join(map(str, byte_bits)), 2)
+        if val == 0: break
+        byte_vals.append(val)
     
-    base_bits = text_to_bits(text)
+    try:
+        return bytes(byte_vals).decode('utf-8')
+    except UnicodeDecodeError:
+        return bytes(byte_vals).decode('utf-8', errors='replace')
+
+def embed_text_dct(img_np, text, password=""):
+    """
+    Embed text into image using robust DCT with majority voting, double-coeff storage,
+    and optional cryptographic block shuffling.
+    """
+    img_ycc = cv2.cvtColor(img_np, cv2.COLOR_BGR2YCrCb)
+    Y, Cr, Cb = cv2.split(img_ycc)
+
+    # 1. Convert text to bits
+    bits = text_to_bits(text)
+
+    # 2. Add terminator and redundancy
+    terminator = [0]*8
+    msg_bits = bits + terminator
     redundant_bits = []
-    for bit in base_bits:
-        redundant_bits.extend([bit] * REDUNDANCY)
-    
-    h, w = y.shape
-    block_size = 8
-    num_blocks_h = h // block_size
-    num_blocks_w = w // block_size
-    
-    # We use two coefficients per block to spread the energy
-    if len(redundant_bits) > num_blocks_h * num_blocks_w:
-        raise ValueError(f"Занадто довгий текст. Максимум: {int((num_blocks_h * num_blocks_w) / REDUNDANCY / 8)} симв.")
+    for b in msg_bits:
+        redundant_bits.extend([b] * REDUNDANCY)
 
-    y_float = y.astype(float)
-    bit_idx = 0
+    h, w = Y.shape
+    num_blocks_h = h // 8
+    num_blocks_w = w // 8
+    total_blocks = num_blocks_h * num_blocks_w
 
-    for i in range(num_blocks_h):
-        for j in range(num_blocks_w):
-            if bit_idx >= len(redundant_bits): break
-                
-            row, col = i * block_size, j * block_size
-            block = y_float[row:row+block_size, col:col+block_size]
-            block_dct = dct(dct(block.T, norm='ortho').T, norm='ortho')
-            
-            bit = redundant_bits[bit_idx]
-            
-            # Apply QIM to two coefficients for double protection
-            for cy, cx in COEFFS:
-                coeff = block_dct[cy, cx]
-                if bit == 1:
-                    block_dct[cy, cx] = (np.floor(coeff / QUANT_STEP) + 0.5) * QUANT_STEP
-                else:
-                    block_dct[cy, cx] = np.round(coeff / QUANT_STEP) * QUANT_STEP
+    if len(redundant_bits) > total_blocks:
+        raise ValueError("Text is too long for this image size with current redundancy.")
 
-            block_idct = idct(idct(block_dct.T, norm='ortho').T, norm='ortho')
-            y_float[row:row+block_size, col:col+block_size] = block_idct
-            bit_idx += 1
-            
-    y_final = np.clip(y_float, 0, 255).astype(np.uint8)
-    merged = cv2.merge([y_final, cr, cb])
-    return cv2.cvtColor(merged, cv2.COLOR_YCrCb2BGR)
+    # 3. Generate Block Indices (Shuffled if password provided)
+    indices = np.arange(total_blocks)
+    if password:
+        seed = int(hashlib.sha256(password.encode()).hexdigest(), 16) % (2**32)
+        np.random.RandomState(seed).shuffle(indices)
 
-def extract_text_dct(image_np):
+    # 4. Embed bits
+    for bit_idx, bit in enumerate(redundant_bits):
+        block_idx = indices[bit_idx]
+        i = block_idx // num_blocks_w
+        j = block_idx % num_blocks_w
+
+        block = Y[i*8:(i+1)*8, j*8:(j+1)*8].astype(np.float32)
+        dct_block = dct(dct(block.T, norm='ortho').T, norm='ortho')
+        
+        for cy, cx in COEFFS:
+            coeff = dct_block[cy, cx]
+            if bit == 1:
+                dct_block[cy, cx] = (np.floor(coeff / QUANT_STEP) + 0.5) * QUANT_STEP
+            else:
+                dct_block[cy, cx] = np.round(coeff / QUANT_STEP) * QUANT_STEP
+        
+        inv_dct = idct(idct(dct_block.T, norm='ortho').T, norm='ortho')
+        Y[i*8:(i+1)*8, j*8:(j+1)*8] = np.clip(inv_dct, 0, 255)
+
+    img_ycc_encoded = cv2.merge([Y, Cr, Cb])
+    return cv2.cvtColor(img_ycc_encoded, cv2.COLOR_YCrCb2BGR)
+
+def extract_text_dct(img_np, password=""):
     """
-    Extraction with multi-coefficient voting and high redundancy.
+    Extract text using majority voting, double-coeff logic, and optional block unshuffling.
     """
-    img_ycrcb = cv2.cvtColor(image_np, cv2.COLOR_BGR2YCrCb)
-    y, cr, cb = cv2.split(img_ycrcb)
-    y_float = y.astype(float)
+    img_ycc = cv2.cvtColor(img_np, cv2.COLOR_BGR2YCrCb)
+    Y, Cr, Cb = cv2.split(img_ycc)
     
-    h, w = y.shape
-    block_size = 8
-    num_blocks_h = h // block_size
-    num_blocks_w = w // block_size
-    
+    h, w = Y.shape
+    num_blocks_h = h // 8
+    num_blocks_w = w // 8
+    total_blocks = num_blocks_h * num_blocks_w
+
+    # Generate Block Indices
+    indices = np.arange(total_blocks)
+    if password:
+        seed = int(hashlib.sha256(password.encode()).hexdigest(), 16) % (2**32)
+        np.random.RandomState(seed).shuffle(indices)
+
     all_raw_bits = []
-    
-    for i in range(num_blocks_h):
-        for j in range(num_blocks_w):
-            row, col = i * block_size, j * block_size
-            block = y_float[row:row+block_size, col:col+block_size]
-            block_dct = dct(dct(block.T, norm='ortho').T, norm='ortho')
-            
-            # Extract from both coefficients and take the best guess
-            votes_for_this_block = []
-            for cy, cx in COEFFS:
-                coeff = block_dct[cy, cx]
-                val = (coeff / QUANT_STEP) % 1
-                votes_for_this_block.append(1 if (0.25 <= val < 0.75) else 0)
-            
-            # Majority vote within the block itself
-            all_raw_bits.append(Counter(votes_for_this_block).most_common(1)[0][0])
+    # Read blocks in the exact same sequence they were written
+    for block_idx in indices:
+        i = block_idx // num_blocks_w
+        j = block_idx % num_blocks_w
+
+        block = Y[i*8:(i+1)*8, j*8:(j+1)*8].astype(np.float32)
+        dct_block = dct(dct(block.T, norm='ortho').T, norm='ortho')
+        
+        # Extract from both coefficients and take the best guess
+        votes_for_this_block = []
+        for cy, cx in COEFFS:
+            coeff = dct_block[cy, cx]
+            val = (coeff / QUANT_STEP) % 1
+            votes_for_this_block.append(1 if (0.25 <= val < 0.75) else 0)
+        
+        # Majority vote within the block itself
+        all_raw_bits.append(Counter(votes_for_this_block).most_common(1)[0][0])
 
     # Final majority vote across redundant copies
     final_bits = []
@@ -159,7 +174,7 @@ def calculate_metrics(original_img, stego_img):
         "capacity": capacity
     }
 
-def run_robustness_tests(stego_img, original_text):
+def run_robustness_tests(stego_img, original_text, password=""):
     """
     Applies several attacks to the stego image, attempts extraction,
     and returns visual and statistical results.
@@ -168,30 +183,30 @@ def run_robustness_tests(stego_img, original_text):
 
     # 1. Gaussian Blur (5x5)
     img_blur = cv2.GaussianBlur(stego_img, (5, 5), 0)
-    results.append(_evaluate_attack("Розмиття (Gaussian Blur 5x5)", img_blur, original_text))
+    results.append(_evaluate_attack("Розмиття (Gaussian Blur 5x5)", img_blur, original_text, password))
 
     # 2. Gaussian Noise
     noise = np.random.normal(0, 15, stego_img.shape).astype(np.float32)
     img_noise = cv2.add(stego_img.astype(np.float32), noise)
     img_noise = np.clip(img_noise, 0, 255).astype(np.uint8)
-    results.append(_evaluate_attack("Шум (Gaussian Noise)", img_noise, original_text))
+    results.append(_evaluate_attack("Шум (Gaussian Noise)", img_noise, original_text, password))
 
     # 3. JPEG Compression (Quality 50%)
     encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
     _, encoded_jpg = cv2.imencode('.jpg', stego_img, encode_param)
     img_jpeg = cv2.imdecode(encoded_jpg, cv2.IMREAD_COLOR)
-    results.append(_evaluate_attack("Стиснення (JPEG 50%)", img_jpeg, original_text))
+    results.append(_evaluate_attack("Стиснення (JPEG 50%)", img_jpeg, original_text, password))
 
     # 4. Brightness (+30)
     img_bright = cv2.convertScaleAbs(stego_img, alpha=1.0, beta=30)
-    results.append(_evaluate_attack("Зміна яскравості (+30)", img_bright, original_text))
+    results.append(_evaluate_attack("Зміна яскравості (+30)", img_bright, original_text, password))
 
     return results
 
-def _evaluate_attack(attack_name, attacked_img, original_text):
+def _evaluate_attack(attack_name, attacked_img, original_text, password):
     """Helper to extract text, calculate survival, and encode thumbnail."""
     try:
-        extracted_text = extract_text_dct(attacked_img)
+        extracted_text = extract_text_dct(attacked_img, password)
     except Exception:
         extracted_text = ""
 
